@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Math} from "../math/math.sol";
-import {fixedPoint} from "../fixed_point.sol";
+import  "../math/math.sol";
+import  "../fixed_point.sol";
 
 
 /// @notice This contract defines all the functions that are inherited by operator and accessor
@@ -19,11 +19,13 @@ abstract contract sacred is Math, fixedPoint {
     /// 4/ calcSeniorNewAsset
     /// 5/ calcSeniorExpectedAsset
 
-    function calcSeniorDebtAssets() internal view returns (uint256) {
+    function calcSeniorDebtAssets(uint256 _seniorDebt, uint256 _seniorBalance) public pure returns (uint256 _seniorAsset) {
         // Implementation for calculating senior debt assets
+        //returns the totsl assets for senior
+        return safeAdd(_seniorDebt, _seniorBalance);
     }
 
-    function calcOverallNAV() internal view returns (uint256) {
+    function calcOverallNAV(uint256 _nav, uint256 _reserve) internal view returns (uint256) {
         // Implementation for calculating overall net asset value
     }
 
@@ -31,9 +33,9 @@ abstract contract sacred is Math, fixedPoint {
         // Implementation for calculating senior ratio
     }
 
-    function calcSeniorNewAsset() internal view returns (uint256) {
-        // Implementation for calculating senior new asset
-    }
+    // function calcSeniorNewAsset() internal view returns (uint256) {
+    //     // Implementation for calculating senior new asset
+    // }
 
     function calcSeniorExpectedAsset() internal view returns (uint256) {
         // Implementation for calculating senior expected asset

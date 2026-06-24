@@ -1,37 +1,66 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @title  Math — RAY (1e27) fixed-point helpers, MakerDAO "dss" style.
-/// @notice Solidity 0.8 checks add/sub/mul for overflow natively, so no
-///         safe-arithmetic wrappers are needed; only fixed-point multiply,
-///         divide, and power are defined. All ratios and rates in the system are
-///         RAY-scaled: `ONE` (1e27) represents 1.0 (= 100%).
+/// @title  Math — RAY (1e27) fixed-point + safe arithmetic, MakerDAO "dss" style.
+/// @notice Ported to parity with Centrifuge `tinlake-math`. All ratios and rates
+///         are RAY-scaled: `ONE` (1e27) represents 1.0 (= 100%).
+/// @dev    Solidity 0.8 already reverts on overflow / underflow / div-by-zero, so
+///         the `safe*` helpers are thin, name-compatible wrappers — they exist so
+///         logic ported from Tinlake's `definitions.sol` / `assessor.sol`
+///         (which call `safeAdd`/`safeSub`/`safeMul`) resolves unchanged. In new
+///         code you may use the native `+ - * /` directly with identical safety.
 abstract contract Math {
     /// @notice One in RAY fixed-point: 1e27 == 1.0 == 100%.
     uint256 internal constant ONE = 1e27;
 
     error DivideByZero();
 
+    // --------------------------------------------------------------------------
+    // Safe arithmetic (Tinlake-API parity; 0.8 enforces the checks natively)
+    // --------------------------------------------------------------------------
+
+    function safeAdd(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x + y;
+    }
+
+    function safeSub(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x - y;
+    }
+
+    function safeMul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x * y;
+    }
+
+    function safeDiv(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x / y;
+    }
+
+    // --------------------------------------------------------------------------
+    // RAY fixed-point (built on the safe helpers, exactly as in tinlake-math)
+    // --------------------------------------------------------------------------
+
     /// @notice Multiply two RAY numbers, rounding down.
     function rmul(uint256 x, uint256 y) internal pure returns (uint256 z) {
-        z = (x * y) / ONE;
+        z = safeMul(x, y) / ONE;
     }
 
     /// @notice Divide RAY `x` by RAY `y`, rounding to nearest (half up).
     function rdiv(uint256 x, uint256 y) internal pure returns (uint256 z) {
         if (y == 0) revert DivideByZero();
-        z = (x * ONE + y / 2) / y;
+        z = safeAdd(safeMul(x, ONE), y / 2) / y;
     }
 
     /// @notice Divide RAY `x` by RAY `y`, rounding up.
     function rdivup(uint256 x, uint256 y) internal pure returns (uint256 z) {
         if (y == 0) revert DivideByZero();
-        z = (x * ONE + (y - 1)) / y;
+        z = safeAdd(safeMul(x, ONE), safeSub(y, 1)) / y;
     }
 
-    /// @notice `x` raised to the power `n` in fixed-point with the given `base`
-    ///         (pass `ONE` for RAY). Used for per-second interest compounding.
-    /// @dev    Canonical MakerDAO dss `rpow`, with in-assembly overflow guards.
+    // --------------------------------------------------------------------------
+    // rpow — x^n in fixed-point with `base` (pass `ONE` for RAY).
+    // Used for per-second interest compounding. Canonical MakerDAO dss rpow.
+    // --------------------------------------------------------------------------
+
     function rpow(uint256 x, uint256 n, uint256 base) internal pure returns (uint256 z) {
         assembly {
             switch x
