@@ -13,6 +13,7 @@ import "../math/math.sol";
 import "./sacred.sol";
 import "../fixed_point.sol";
 import "../auth/auth.sol";
+import "../math/interest.sol";
 
 //inline interfaces 
 
@@ -35,7 +36,7 @@ interface lendingLike{
 
 }
 
-contract assessor is Math,sacred,Auth{
+contract assessor is Math,sacred,Auth,Interest{
     Fixed27 public seniorRatio;
 
     ///@notice accessor is mostly motivated from senior tranche first as priority as per the convention for 
@@ -78,7 +79,7 @@ contract assessor is Math,sacred,Auth{
     //======rebalancing========
 
     function rebalance() public{
-        rebalance(calcExpectedDebtAsset(_accrueSeniorDebt(),_seniorBalance));
+        rebalance(calcExpectedSeniorAssets(_accrueSeniorDebt(),_seniorBalance));
     }
 
     function rebalance(uint256 seniorAsset_) internal{
@@ -93,7 +94,7 @@ contract assessor is Math,sacred,Auth{
         uint256 seniorRato_= calcSeniorRatio(seniorAsset_, nav_, reserve_);
 
         //debt for senior tranche specefically
-        seniorDebt_ = rmul(nav_, seniorRatio);
+        seniorDebt_ = rmul(nav_, seniorRato_);
 
 
         //senior is priority and under loss protection 
@@ -114,9 +115,9 @@ contract assessor is Math,sacred,Auth{
 
     //======helpers========
 
-    function _accrueSeniorDebt() public pure returns (uint256 finalAccruel){
+    function _accrueSeniorDebt() public returns (uint256 finalAccruel){
         if (lastUpdateSeniorInterest >= block.timestamp) {
-            return chargeInterest();
+            return chargeInterest(seniorDebt_, seniorInterestRate.value, lastUpdateSeniorInterest);
         }
         lastUpdateSeniorInterest = block.timestamp;
         return finalAccruel;

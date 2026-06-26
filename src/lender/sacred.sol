@@ -24,10 +24,10 @@ abstract contract sacred is Math, fixedPoint {
     /// 4/ calcSeniorNewAsset
     /// 5/ calcSeniorExpectedAsset
 
-    function calcSeniorDebtAssets(uint256 _seniorDebt, uint256 _seniorBalance) public pure returns (uint256 _seniorAsset) {
+    function calcExpectedSeniorAssets(uint256 _debt, uint256 _balance) public pure returns (uint256 _seniorAsset) {
         // Implementation for calculating senior debt assets
         //returns the totsl assets for senior
-        return safeAdd(_seniorDebt, _seniorBalance);
+        return safeAdd(_debt, _balance);
     }
 
     function calcOverallNAV(uint256 _nav, uint256 _reserve) internal view returns (uint256) {
@@ -45,7 +45,7 @@ abstract contract sacred is Math, fixedPoint {
     function calcJuniorRatio (uint256 _nav, uint256 _reserve) external returns (uint256){
 
         //calculate senior assets 
-        uint256 seniorAssets= calcSeniorDebtAssets( _seniorDebt, _seniorBalance);
+        uint256 seniorAssets= calcExpectedSeniorAssets( _seniorDebt, _seniorBalance);
         //total assets
         uint256 assets = safeAdd(_nav, _reserve);
         //for junio ratio we need some checks as it is obviously one priority level below to senior
