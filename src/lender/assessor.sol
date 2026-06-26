@@ -9,9 +9,10 @@ pragma solidity 0.8.28;
 /// the motivation of a legacy code base from centrifuge tilake github. 
 ///  */
 
-import "../math/Math.sol";
-import "../sacred.sol";
+import "../math/math.sol";
+import "./sacred.sol";
 import "../fixed_point.sol";
+import "../auth/auth.sol";
 
 //inline interfaces 
 
@@ -26,7 +27,7 @@ interface trancheLike{
 }
 /// @notice the idle reserve interface, refer idle,sol 
 interface idleLike{
-
+    function totalBalance() external view returns (uint256);
 }
 
 ///@notice this depends strategies and future strategy developments, adapter surface may change as per roadmap 
@@ -34,7 +35,7 @@ interface lendingLike{
 
 }
 
-contract assessor is math,sacred,auth{
+contract assessor is Math,sacred,Auth{
     Fixed27 public seniorRatio;
 
     ///@notice accessor is mostly motivated from senior tranche first as priority as per the convention for 
@@ -56,10 +57,10 @@ contract assessor is math,sacred,auth{
 
     /// @dev intentionally lending adapter type engagement is missing, configurable for future integrations
 
-    TrancheLike public seniorTranche;
-    TrancheLike public juniorTranche;
-    NAVFeedLike public navFeed;
-    ReserveLike public reserve;
+    trancheLike public seniorTranche;
+    trancheLike public juniorTranche;
+    navLike public navFeed;
+    idleLike public reserve;
 
     uint256 maxIdle; //reserve
 
@@ -81,10 +82,34 @@ contract assessor is math,sacred,auth{
     }
 
     function rebalance(uint256 seniorAsset_) internal{
+        //get nav
+        uint256 nav_= getNav();
+        //get reserve
+        uint256 reserve_ = reserve.totalBalance();
+
+        //this is the primary implementation of waterfall and thus need other deps like
+        //senior ratio
+
+        uint256 seniorRato_= calcSeniorRatio(seniorAsset_, nav_, reserve_);
+
+        //debt for senior tranche specefically
+        seniorDebt_ = rmul(nav_, seniorRatio);
+
+
+        //senior is priority and under loss protection 
+        if (seniorDebt_>seniorAsset_){
+            seniorDebt_=seniorAsset_;
+            seniorBalance_=0;
+        } 
+        else{
+            seniorBalance_= safeSub(seniorAsset_, seniorDebt_);
+        } 
+
+
     }
 
     function getNav() public view returns (uint256 _nav) {
-
+        //nav should be 
     }
 
     //======helpers========
@@ -96,6 +121,8 @@ contract assessor is math,sacred,auth{
         lastUpdateSeniorInterest = block.timestamp;
         return finalAccruel;
     }
+
+    
 
 
 }
