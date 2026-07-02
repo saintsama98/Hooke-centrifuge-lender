@@ -21,17 +21,20 @@ import "../math/interest.sol";
 interface navLike {}
 
 /// @notice token interface
-interface trancheLike {}
+interface trancheLike{
 
-/// @notice the idle reserve interface, refer idle,sol
-interface idleLike {
+}
+/// @notice the idle reserve interface, refer idle,sol 
+interface idleLike{
     function totalBalance() external view returns (uint256);
 }
 
 ///@notice this depends strategies and future strategy developments, adapter surface may change as per roadmap
 interface lendingLike {}
 
-contract assessor is Math, sacred, Auth, Interest {
+}
+
+contract assessor is Math,sacred,Auth,Interest{
     Fixed27 public seniorRatio;
 
     ///@notice accessor is mostly motivated from senior tranche first as priority as per the convention for
@@ -73,44 +76,52 @@ contract assessor is Math, sacred, Auth, Interest {
 
     //======rebalancing========
 
-    function rebalance() public {
-        rebalance(calcExpectedSeniorAssets(_accrueSeniorDebt(), _seniorBalance));
+    function rebalance() public{
+        rebalance(calcExpectedSeniorAssets(_accrueSeniorDebt(),_seniorBalance));
     }
 
-    function rebalance(uint256 seniorAsset_) internal {
+    function rebalance(uint256 seniorAsset_) internal{
         //get nav
-        uint256 nav_ = getNav();
+        uint256 nav_= getNav();
         //get reserve
         uint256 reserve_ = reserve.totalBalance();
 
         //this is the primary implementation of waterfall and thus need other deps like
         //senior ratio
 
-        uint256 seniorRato_ = calcSeniorRatio(seniorAsset_, nav_, reserve_);
+        uint256 seniorRato_= calcSeniorRatio(seniorAsset_, nav_, reserve_);
 
         //debt for senior tranche specefically
         seniorDebt_ = rmul(nav_, seniorRato_);
 
-        //senior is priority and under loss protection
-        if (seniorDebt_ > seniorAsset_) {
-            seniorDebt_ = seniorAsset_;
-            seniorBalance_ = 0;
-        } else {
-            seniorBalance_ = safeSub(seniorAsset_, seniorDebt_);
-        }
+
+        //senior is priority and under loss protection 
+        if (seniorDebt_>seniorAsset_){
+            seniorDebt_=seniorAsset_;
+            seniorBalance_=0;
+        } 
+        else{
+            seniorBalance_= safeSub(seniorAsset_, seniorDebt_);
+        } 
+
+
     }
 
     function getNav() public view returns (uint256 _nav) {
-        //nav should be
+        //nav should be 
     }
 
     //======helpers========
 
-    function _accrueSeniorDebt() public returns (uint256 finalAccruel) {
+    function _accrueSeniorDebt() public returns (uint256 finalAccruel){
         if (lastUpdateSeniorInterest >= block.timestamp) {
             return chargeInterest(seniorDebt_, seniorInterestRate.value, lastUpdateSeniorInterest);
         }
         lastUpdateSeniorInterest = block.timestamp;
         return finalAccruel;
     }
+
+    
+
+
 }
