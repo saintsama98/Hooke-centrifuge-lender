@@ -208,6 +208,6 @@ contract Tranche is Math, Auth, FixedPoint {
         return (payoutCurrencyAmount, payoutTokenAmount, remainingSupplyCurrency, remainingRedeemToken);
     }
 
-    //helpers
+    //=========helpers=========
     function _safeTransfer(ERC20Like token, address user, uint256) internal {}
 }

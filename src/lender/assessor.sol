@@ -6,7 +6,7 @@ pragma solidity 0.8.28;
 /// @title Hooke - a thin open tranching protocol
 /// @author adiii.eth
 /// @notice This is minimal proof of concept to define tranching as a whole defi primmitive with credit market layout drawn from
-/// the motivation of a legacy code base from centrifuge tilake github. 
+/// the motivation of a legacy code base from centrifuge tilake github.
 ///  */
 
 import "../math/math.sol";
@@ -15,12 +15,10 @@ import "../fixed_point.sol";
 import "../auth/auth.sol";
 import "../math/interest.sol";
 
-//inline interfaces 
+//inline interfaces
 
-/// @notice for nav based calculations motivated from borrower side and discounted rate dep  
-interface navLike{
-
-}
+/// @notice for nav based calculations motivated from borrower side and discounted rate dep
+interface navLike {}
 
 /// @notice token interface
 interface trancheLike{
@@ -31,20 +29,20 @@ interface idleLike{
     function totalBalance() external view returns (uint256);
 }
 
-///@notice this depends strategies and future strategy developments, adapter surface may change as per roadmap 
-interface lendingLike{
+///@notice this depends strategies and future strategy developments, adapter surface may change as per roadmap
+interface lendingLike {}
 
 }
 
 contract assessor is Math,sacred,Auth,Interest{
     Fixed27 public seniorRatio;
 
-    ///@notice accessor is mostly motivated from senior tranche first as priority as per the convention for 
+    ///@notice accessor is mostly motivated from senior tranche first as priority as per the convention for
     /// easy follow up and this convemtion should be maintained for development.
 
     // there are two senior variables that are dedicated to token level calculations
 
-    ///@dev seniorDebt is asset value that brings interest and is playable 
+    ///@dev seniorDebt is asset value that brings interest and is playable
     /// seniorBalance is the balance of the senior tranche that dosen't contribute in interest accruel
     uint256 seniorDebt_;
     uint256 seniorBalance_;
@@ -66,9 +64,9 @@ contract assessor is Math,sacred,Auth,Interest{
     uint256 maxIdle; //reserve
 
     //dust related balance tolerence
-    uint256 public constant supplyTolerence= 5;
+    uint256 public constant supplyTolerence = 5;
 
-    constructor () {
+    constructor() {
         seniorInterestRate.value = ONE;
         lastUpdateSeniorInterest = block.timestamp;
         seniorRatio.value = 0;
