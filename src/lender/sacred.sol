@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import  "../math/math.sol";
-import  "../fixed_point.sol";
-
+import "../math/math.sol";
+import "../fixed_point.sol";
 
 /// @notice This contract defines all the functions that are inherited by operator and accessor
 /// the sole purpose being abstraction and modularity, these functions are core to lending side operation
 
 abstract contract sacred is Math, fixedPoint {
-
-
-        uint256 public _seniorBalance;
-        uint256 public _seniorDebt;
-
+    uint256 public _seniorBalance;
+    uint256 public _seniorDebt;
 
     /// @notice deposits, curation and redemption all phases in lifecycle are the only ones which are considered valid
     /// in this codebase, i,e these smart contracts are written for lender side waterfall model only.
@@ -34,25 +30,27 @@ abstract contract sacred is Math, fixedPoint {
         // Implementation for calculating overall net asset value
     }
 
-    function calcSeniorRatio(uint256 _seniorAsset, uint256 _nav, uint256 _reserve) public pure returns (uint256 seniorRatio) {
+    function calcSeniorRatio(uint256 _seniorAsset, uint256 _nav, uint256 _reserve)
+        public
+        pure
+        returns (uint256 seniorRatio)
+    {
         // Implementation for calculating senior ratio
-        uint256 assets= safeAdd(_nav, _reserve);
-        if (assets==0) return 0;
-        return rdiv (_seniorAsset, assets);
-        
+        uint256 assets = safeAdd(_nav, _reserve);
+        if (assets == 0) return 0;
+        return rdiv(_seniorAsset, assets);
     }
 
-    function calcJuniorRatio (uint256 _nav, uint256 _reserve) external returns (uint256){
-
-        //calculate senior assets 
-        uint256 seniorAssets= calcExpectedSeniorAssets( _seniorDebt, _seniorBalance);
+    function calcJuniorRatio(uint256 _nav, uint256 _reserve) external returns (uint256) {
+        //calculate senior assets
+        uint256 seniorAssets = calcExpectedSeniorAssets(_seniorDebt, _seniorBalance);
         //total assets
         uint256 assets = safeAdd(_nav, _reserve);
         //for junio ratio we need some checks as it is obviously one priority level below to senior
         if (assets == 0) return 0;
 
         if (seniorAssets > assets) return 0;
-        if (seniorAssets == 0 && assets>0) return ONE;
+        if (seniorAssets == 0 && assets > 0) return ONE;
         return safeSub(ONE, rdiv(seniorAssets, assets));
     }
 
@@ -63,12 +61,9 @@ abstract contract sacred is Math, fixedPoint {
     //     return seniorDebt_;
     // }
 
-
     // function calcSeniorNewAsset() internal view returns (uint256) {
     //     // Implementation for calculating senior new asset
     // }
-
-
 
     function calcExpectedSeniorAsset(
         uint256 seniorRedeem,
