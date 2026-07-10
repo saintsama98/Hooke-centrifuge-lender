@@ -208,6 +208,48 @@ contract Tranche is Math, Auth, FixedPoint {
         return (payoutCurrencyAmount, payoutTokenAmount, remainingSupplyCurrency, remainingRedeemToken);
     }
 
+    ////////////////////////////////////////////////////////////
+    /*this will be a core dependency for the tranche wise distribution by coordinator*/
+    ////////////////////////////////////////////////////////////
+    function epochUpdate(
+        uint256 epochID,
+        uint256 supplyFulfillment_,
+        uint256 redeemFulfillment_,
+        uint256 tokenPrice_,
+        uint256 epochSupplyOrderCurrency,
+        uint256 epochRedeemOrderCurrency
+    ) public auth {
+        require(waitingForUpdate == true);
+        waitingForUpdate = false;
+
+        epochs[epochID].supplyFulfillment.value = supplyFulfillment_;
+        epochs[epochID].redeemFulfillment.value = redeemFulfillment_;
+        epochs[epochID].tokenPrice.value = tokenPrice_;
+
+        // currency needs to be converted to tokenAmount with current token price
+        uint256 redeemInToken = 0;
+        uint256 supplyInToken = 0;
+        if (tokenPrice_ > 0) {
+            supplyInToken = rdiv(epochSupplyOrderCurrency, tokenPrice_);
+            redeemInToken = safeDiv(safeMul(epochRedeemOrderCurrency, ONE), tokenPrice_);
+        }
+
+        // calculates the delta between supply and redeem for tokens and burn or mint them
+        adjustTokenBalance(epochID, supplyInToken, redeemInToken);
+        // calculates the delta between supply and redeem for currency and deposit or get them from the reserve
+        adjustCurrencyBalance(epochID, epochSupplyOrderCurrency, epochRedeemOrderCurrency);
+
+        // the unfulfilled orders (1-fulfillment) is automatically ordered
+        totalSupply = safeAdd(
+            safeTotalSub(totalSupply, epochSupplyOrderCurrency),
+            rmul(epochSupplyOrderCurrency, safeSub(ONE, epochs[epochID].supplyFulfillment.value))
+        );
+        totalRedeem = safeAdd(
+            safeTotalSub(totalRedeem, redeemInToken),
+            rmul(redeemInToken, safeSub(ONE, epochs[epochID].redeemFulfillment.value))
+        );
+    }
+
     //=========helpers=========
     function _safeTransfer(ERC20Like token, address user, uint256) internal {}
 }
