@@ -73,11 +73,11 @@ contract assessor is Math, sacred, Auth, Interest {
 
     //======rebalancing========
 
-    function rebalance() public {
-        rebalance(calcExpectedSeniorAssets(_accrueSeniorDebt(), _seniorBalance));
+    function trancheRebalance() public {
+        trancheRebalance(calcExpectedSeniorAssets(_accrueSeniorDebt(), _seniorBalance));
     }
 
-    function rebalance(uint256 seniorAsset_) internal {
+    function trancheRebalance(uint256 seniorAsset_) internal {
         //get nav
         uint256 nav_ = getNav();
         //get reserve
