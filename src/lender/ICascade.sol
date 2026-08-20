@@ -2,27 +2,33 @@
 
 pragma solidity 0.8.28;
 
-/// @title ICascade
-/// @author adiii.eth
-///
-/// @notice A cascade is the part of a tranched pool that decides who gets paid and in
-/// what order. Cash coming into the pool goes to the most senior tranche first and to
-/// the most junior tranche last. Loss is applied the other way round, to the most
-/// junior tranche first and to the most senior tranche last. This interface writes
-/// that behaviour down in one place so a reader can follow it, compare it against a
-/// protocol they already know, and form a view on it.
-///
-/// @notice Why an interface exists here at all. Every protocol that offers a senior
-/// and a junior position builds its own engine for this, and no two of them expose the
-/// same surface, so understanding one of them means reading all of it. The aim is to
-/// offer a small surface a reader can check their own understanding against, and
-/// enough shape to ask whether plain tranching is worth standardising or whether it
-/// stays too tied to each protocol to be worth it. That question is open and this
-/// interface does not settle it.
-///
-/// @notice Note on status. Nothing here is audited. Neither this interface nor the
-/// contracts that implement it have been reviewed, and none of it has ever held money.
-/// It is written for study and for a first impression of how tranching fits together.
+///@title ICascade
+///@author adiii.eth (https://adiii.eth.limo)
+///@notice A cascade is the deterministic engine at the heart of any tranched
+/// structure: it routes incoming cash flow across an ordered set of tranches in
+/// strictly decreasing order of seniority, and allocates realised loss across the
+/// same set in strictly increasing order of seniority. The senior-most tranche is
+/// paid first and impaired last; the junior-most tranche is paid last and impaired
+/// first. This interface standardises that engine: the priority of payments, the
+/// loss allocation, and the coverage tests whose breach re-routes cash flow away
+/// from junior tranches toward the repayment of senior obligations until the
+/// measured ratio is restored (diversion).
+
+///@notice MOTIVATION : Centrifuge tinlake is the only motivation for this interface design as tinlake has a clear seam over
+/// the distribution and epoch wise execution, genuine showcasing of the tranche hierarchy.
+/// Various layouts / invarient specs were tried before settling current implementation.
+
+///@notice Current implementation is as per current specefications only, may alter in future.
+
+///@notice SCOPE - the interface standardises the plumbing (the deterministic split
+/// of cash and loss) and exposes the calibration (coverage triggers, ratio bounds)
+/// as explicit, governable, queryable parameters. It deliberately does NOT specify:
+///  1. loss recognition: how loss is measured or attested (NAV oracles, write-off
+///     schedules) is delegated to the implementation's valuation module;
+///  2. tranche tokenisation - how claims are represented (ERC-20 pairs, ERC-6909,
+///     ERC-3475) is delegated to a composed token standard;
+///  3. settlement cadence - the engine may be invoked continuously or batched into
+///     epochs (cf. ERC-7540 asynchronous flows).
 
 /*IMPORTANT*/
 /// The implementation side is under development and this surface is expected to change.
