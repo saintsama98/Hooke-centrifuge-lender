@@ -35,6 +35,18 @@ abstract contract Math {
         z = x / y;
     }
 
+    /// @notice Saturating subtraction: returns 0 instead of reverting when `amount > total`.
+    /// @dev    Tinlake keeps this on `Tranche` as a private helper. It is hoisted here
+    ///         because it is generic and because the epoch bookkeeping in `tranche.sol`
+    ///         legitimately drifts by rounding dust: `totalSupply` can end an epoch a few
+    ///         wei below the amount being retired, and a revert there would wedge the
+    ///         whole pool over a rounding error. Use it ONLY for that. Anywhere a
+    ///         negative result is a real accounting fault, use `safeSub` and let it revert.
+    function safeTotalSub(uint256 total, uint256 amount) internal pure returns (uint256) {
+        if (total < amount) return 0;
+        return total - amount;
+    }
+
     // --------------------------------------------------------------------------
     // RAY fixed-point (built on the safe helpers, exactly as in tinlake-math)
     // --------------------------------------------------------------------------

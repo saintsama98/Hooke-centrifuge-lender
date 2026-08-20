@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  check:
+    name: build, fmt, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Show forge version
+        run: forge --version
+
+      - name: Check formatting
+        run: forge fmt --check
+
+      - name: Build
+        run: forge build
+
+      # LenderDeployer is a deployment script and is deliberately exempt. It
+      # embeds the creation bytecode of nine contracts, so it cannot fit under
+      # EIP-170 and is never itself deployed on chain. Everything in src/ must
+      # fit, and this step fails if anything else exceeds the limit.
+      - name: Contract sizes
+        run: |
+          forge build --sizes > sizes.txt || true
+          cat sizes.txt
+          over=$(awk -F'|' '/^\|/ && $2 !~ /Contract/ {
+                   name=$2; runtime=$3;
+                   gsub(/^[ \t]+|[ \t]+$/, "", name);
+                   gsub(/[ ,]/, "", runtime);
+                   if (name != "" && name != "LenderDeployer" && runtime+0 > 24576)
+                     print name" ("runtime" bytes)"
+                 }' sizes.txt)
+          if [ -n "$over" ]; then
+            echo "::error::contracts over the EIP-170 runtime limit: $over"
+            exit 1
+          fi
+          echo "all deployable contracts are within the EIP-170 limit"
+
+      # The pull-request profile runs 1000 fuzz runs; the ci profile used on
+      # pushes to main runs 50000. Both are declared in foundry.toml.
+      - name: Test
+        run: forge test -vvv
+        env:
+          FOUNDRY_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || 'ci' }}

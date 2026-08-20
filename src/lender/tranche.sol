@@ -5,51 +5,46 @@ pragma solidity 0.8.28;
 import "../math/math.sol";
 import "../fixed_point.sol";
 import "../auth/auth.sol";
+import "./interfaces.sol";
 
-///@notice this is the origin tranche making contract motivated from tinlake completely, honestly more abstracted that it is
-// originally intended.
-
-interface ERC20Like {
-    function balanceOf(address) external view returns (uint256);
-    function transferFrom(address, address, uint256) external returns (bool);
-    function mint(address, uint256) external;
-    function burn(address, uint256) external;
-    function totalSupply() external view returns (uint256);
-    function approve(address usr, uint256 amount) external;
-}
-
-interface IdleLike {
-    function totalBalance() public view returns (uint256);
-    function payout(uint256 currencyAmount) external;
-    function deposit(uint256 currencyAmount) external;
-}
-
-///@notice we will be depending on coordinator contract for epoch placement and update, this is a minimal interface to avoid complexity and surface.
-// this pattern of cross dependency is what makes tinlake interesting especially if dev wants to interprete tranching fundamentals
-
-///@dev different phases handled by coordinator with help of epoch handling and income processing which is done in this very
-//tranche contract
-
-interface EpochPlacementLike {
-    function currentEpoch() external view returns (uint256);
-    function lastEpochExecuted() external view returns (uint256);
-}
-
-contract Tranche is Math, Auth, FixedPoint {
-    ///@notice tranche contract will be a dependecy for contracts like operator, coordinator eventually
+/// @title Tranche
+/// @author adiii.eth
+/// @notice Holds the orders and the escrow for one seniority class. A pool with a
+/// senior and a junior class deploys this twice, against two different tranche tokens,
+/// and wires both into one coordinator. The contract does not know which one it is.
+/// Nothing here knows about seniority, ratios or the other tranche, and all of that
+/// lives in the assessor. Adding a third class is a change to the deployment and to
+/// the coordinator, not to this contract.
+///
+/// @notice Note on status. Not audited. Written for study, and under development.
+///
+/// @dev The order lifecycle runs in four steps.
+///  1. supplyOrder or redeemOrder. A user states intent. Currency or tokens are held
+///     here and the order is tagged with the current epoch.
+///  2. closeEpoch. The coordinator snapshots the total and locks this tranche until it
+///     hears back.
+///  3. epochUpdate. The coordinator reports what share of the orders was filled and at
+///     what price. Tokens are minted or burned and currency settles against the
+///     reserve once, in total.
+///  4. deservedRelease. Each user pulls their own share of every epoch executed since
+///     they ordered.
+///
+/// @dev Steps 2 and 3 cost the same no matter how many users there are. Step 4 is the
+/// only work done per user and the user pays for it. That is the reason for the epoch
+/// design: a pool with ten thousand suppliers settles in one transaction.
+contract Tranche is Math, Auth {
     mapping(uint256 => Epoch) public epochs;
 
     struct Epoch {
-        ///@notice supplyFulfillment is the percentage of the supply that is fulfilled for the epoch
-        //same goes for redeemFulfillment
-
-        //this is done because the supply is 100% but coordinator can only keep it less that 100% due
-        //to allocations, also cannot invest 100% due to caps and constraints from base securitization that are implemented
-        //here itself
-
-        uint256 supplyFulfillment;
-        uint256 redeemFulfillment;
-        uint256 tokenPrice;
+        /// @notice Share of the supply orders of the epoch that was filled, in 27
+        /// decimal fixed point. An order is placed in full but the coordinator may
+        /// fill less than all of it, because of the constraints of the pool.
+        Fixed27 supplyFulfillment;
+        /// @notice Share of the redeem orders of the epoch that was filled, in 27
+        /// decimal fixed point.
+        Fixed27 redeemFulfillment;
+        /// @notice Token price at the end of the epoch, in 27 decimal fixed point.
+        Fixed27 tokenPrice;
     }
 
     struct UserOrder {
@@ -58,121 +53,282 @@ contract Tranche is Math, Auth, FixedPoint {
         uint256 redeemTokenAmount;
     }
 
-    uint256 totalSupply;
-    uint256 totalRedeem;
+    /// @notice Aggregate open supply orders, in currency.
+    uint256 public totalSupply;
+    /// @notice Aggregate open redeem orders, in tranche tokens.
+    uint256 public totalRedeem;
 
     mapping(address => UserOrder) public users;
 
     ERC20Like public currency;
     ERC20Like public token;
-    ReserveLike public reserve;
+    IdleLike public reserve;
     EpochPlacementLike public epochPlacement;
 
-    modifier orderAllowed(address user) {
-        //supply/redeem whitelisting based only
-        require(
-            users[user].suppluCurrentAmount == 0 || users[user].redeemCurrentAmount == 0
-                || users[user].orderedInEpoch == epochTicker.currentEpoch(),
-            "this release required first"
-        );
+    address self;
+
+    /// @notice True between closeEpoch and epochUpdate.
+    /// @dev The lock that makes the two step handshake safe. Without it a coordinator
+    /// could close twice and snapshot the same orders into two epochs, or update an
+    /// epoch it never closed.
+    bool public waitingForUpdate = false;
+
+    event SupplyOrder(address indexed usr, uint256 amount);
+    event RedeemOrder(address indexed usr, uint256 amount);
+    event EpochUpdate(
+        uint256 indexed epochID, uint256 supplyFulfillment, uint256 redeemFulfillment, uint256 tokenPrice
+    );
+    event Release(address indexed usr, uint256 payoutCurrency, uint256 payoutToken);
+
+    error ReleaseRequiredFirst();
+    error TransferFailed();
+    error NotWaitingForUpdate();
+    error AlreadyClosed();
+    error UnknownParameter();
+
+    /// @dev A user may place a new order only when both open orders are empty, or
+    /// when the existing order belongs to the current epoch. Requiring both to be
+    /// empty matters. A user holding an order from an executed epoch has to collect it
+    /// before ordering again, because the epoch a user ordered in is stored as a single
+    /// cursor. Overwriting it with a new epoch would start the release walk in the
+    /// wrong place and give up everything in between.
+    modifier orderAllowed(address usr) {
+        if (!((users[usr].supplyCurrencyAmount == 0 && users[usr].redeemTokenAmount == 0)
+                    || users[usr].orderedInEpoch == epochPlacement.currentEpoch())) revert ReleaseRequiredFirst();
         _;
     }
 
-    ///@param  currency_ address of the currency token/underlying asset
-    ///@param token_ address of the token/to-be-tranche token
-    constructor(address currency_, address token_) public {
-        wards[msg.sender] = 1;
+    /// @param currency_ Address of the underlying asset.
+    /// @param token_ Address of the tranche token.
+    constructor(address currency_, address token_) {
         token = ERC20Like(token_);
         currency = ERC20Like(currency_);
         self = address(this);
     }
 
-    function depend() public auth {}
-
-    //snapshots and simple escrowing to record the epoch
-    //this snapshot is divided in two parts, one for supply and other for redeem as both are
-    //obvious outcomes from investing/lending side
-
-    function supplyOrder(address user, uint256 newSupplyAmount) public auth orderAllowed(user) {
-        //initially we need to put user in currennt epoch for accurate snapshot
-        users[user].orderedInEpoch = epochPlacement.currentEpoch();
-        //the underlying asset is what lender will soft allocate
-        uint256 currentSupplyAmount = users[user].supplyCurrencyAmount;
-
-        users[user].supplyCurrencyAmount = newSupplyAmount;
-
-        totalSupply = safeAdd(safeTotalSub(totalSupply, currentSupplyAmount), newSupplyAmount);
-
-        if (newSupplyAmount > currentSupplyAmount) {
-            uint256 delta = safeSub(newSupplyAmount, currentSupplyAmount);
-            require(currency.transferFrom(user, self, delta), "currency-transfer-failed");
-            return;
-        }
-        delta = safeSub(currentSupplyAmount, newSupplyAmount);
-        if (delta > 0) {
-            _safeTransfer(currency, user, delta);
+    function depend(bytes32 contractName, address addr) public auth {
+        if (contractName == "token") {
+            token = ERC20Like(addr);
+        } else if (contractName == "currency") {
+            currency = ERC20Like(addr);
+        } else if (contractName == "reserve") {
+            reserve = IdleLike(addr);
+        } else if (contractName == "epochPlacement") {
+            epochPlacement = EpochPlacementLike(addr);
+        } else {
+            revert UnknownParameter();
         }
     }
 
-    function redeemOrder(address user, uint256 newRedeemAmount) public auth orderAllowed(user) {
-        users[usr].orderedInEpoch = epochTicker.currentEpoch();
+    // views
+
+    function balance() external view returns (uint256) {
+        return currency.balanceOf(self);
+    }
+
+    function tokenSupply() external view returns (uint256) {
+        return token.totalSupply();
+    }
+
+    // step 1, ordering. Orders are recorded against the current epoch and the value is
+    // held here until the epoch settles. Supply and redeem are kept separate.
+
+    /// @notice Sets the open supply order of a user, in currency.
+    /// @param usr Address the order belongs to.
+    /// @param newSupplyAmount New order size. Zero cancels the order and refunds it.
+    /// @dev The amount is absolute rather than added to what is there. The difference
+    /// is taken in or returned, so a user who lowers an order is not charged twice and
+    /// one who raises it is not credited for currency that was never sent.
+    function supplyOrder(address usr, uint256 newSupplyAmount) public auth orderAllowed(usr) {
+        users[usr].orderedInEpoch = epochPlacement.currentEpoch();
+
+        uint256 currentSupplyAmount = users[usr].supplyCurrencyAmount;
+        users[usr].supplyCurrencyAmount = newSupplyAmount;
+        totalSupply = safeAdd(safeTotalSub(totalSupply, currentSupplyAmount), newSupplyAmount);
+
+        emit SupplyOrder(usr, newSupplyAmount);
+
+        if (newSupplyAmount > currentSupplyAmount) {
+            uint256 delta = safeSub(newSupplyAmount, currentSupplyAmount);
+            if (!currency.transferFrom(usr, self, delta)) revert TransferFailed();
+            return;
+        }
+        uint256 refund = safeSub(currentSupplyAmount, newSupplyAmount);
+        if (refund > 0) {
+            _safeTransfer(currency, usr, refund);
+        }
+    }
+
+    /// @notice Sets the open redeem order of a user, in tranche tokens.
+    /// @param usr Address the order belongs to.
+    /// @param newRedeemAmount New order size. Zero cancels the order.
+    function redeemOrder(address usr, uint256 newRedeemAmount) public auth orderAllowed(usr) {
+        users[usr].orderedInEpoch = epochPlacement.currentEpoch();
 
         uint256 currentRedeemAmount = users[usr].redeemTokenAmount;
         users[usr].redeemTokenAmount = newRedeemAmount;
         totalRedeem = safeAdd(safeTotalSub(totalRedeem, currentRedeemAmount), newRedeemAmount);
 
+        emit RedeemOrder(usr, newRedeemAmount);
+
         if (newRedeemAmount > currentRedeemAmount) {
             uint256 delta = safeSub(newRedeemAmount, currentRedeemAmount);
-            require(token.transferFrom(usr, self, delta), "token-transfer-failed");
+            if (!token.transferFrom(usr, self, delta)) revert TransferFailed();
             return;
         }
-
-        uint256 delta = safeSub(currentRedeemAmount, newRedeemAmount);
-        if (delta > 0) {
-            _safeTransfer(token, usr, delta);
+        uint256 refund = safeSub(currentRedeemAmount, newRedeemAmount);
+        if (refund > 0) {
+            _safeTransfer(token, usr, refund);
         }
     }
 
-    //this stage is releasing(lenders currency with all profits) back the assets to investor or lender at this surface (since tranche is an important
-    //surface for lender to be able to invest and redeem)
+    // step 2, close. Hand the totals to the coordinator and lock.
 
-    ///@notice there lies an intermediate surface between escrowing and releasing which is allocating assets to tranches by coordinator
-    //but at this surface it is probably more clean to keep this surface for snapshotting and release from lender perspective
+    /// @notice Snapshots the open orders of this tranche and locks it until
+    /// epochUpdate.
+    /// @return totalSupplyCurrency_ Total open supply orders, in currency.
+    /// @return totalRedeemToken_ Total open redeem orders, in tranche tokens.
+    function closeEpoch() public auth returns (uint256 totalSupplyCurrency_, uint256 totalRedeemToken_) {
+        if (waitingForUpdate) revert AlreadyClosed();
+        waitingForUpdate = true;
+        return (totalSupply, totalRedeem);
+    }
 
-    function calculateDeservedRelease(address user, uint256 endEpoch)
+    // step 3, update. Settle the epoch once, in total.
+
+    /// @notice Records what the coordinator decided to fill and settles it in total.
+    /// @param supplyFulfillment_ Share of the supply orders filled, in 27 decimal
+    /// fixed point.
+    /// @param redeemFulfillment_ Share of the redeem orders filled, in 27 decimal
+    /// fixed point.
+    /// @param tokenPrice_ Price used for the conversions of this epoch, in 27 decimal
+    /// fixed point.
+    function epochUpdate(
+        uint256 epochID,
+        uint256 supplyFulfillment_,
+        uint256 redeemFulfillment_,
+        uint256 tokenPrice_,
+        uint256 epochSupplyOrderCurrency,
+        uint256 epochRedeemOrderCurrency
+    ) public auth {
+        if (!waitingForUpdate) revert NotWaitingForUpdate();
+        waitingForUpdate = false;
+
+        epochs[epochID].supplyFulfillment.value = supplyFulfillment_;
+        epochs[epochID].redeemFulfillment.value = redeemFulfillment_;
+        epochs[epochID].tokenPrice.value = tokenPrice_;
+
+        // currency is converted to a token amount at the current token price
+        uint256 redeemInToken = 0;
+        uint256 supplyInToken = 0;
+        if (tokenPrice_ > 0) {
+            supplyInToken = rdiv(epochSupplyOrderCurrency, tokenPrice_);
+            redeemInToken = safeDiv(safeMul(epochRedeemOrderCurrency, ONE), tokenPrice_);
+        }
+
+        // net the token side and mint or burn only the difference
+        adjustTokenBalance(epochID, supplyInToken, redeemInToken);
+        // net the currency side and settle only the difference against the reserve
+        adjustCurrencyBalance(epochID, epochSupplyOrderCurrency, epochRedeemOrderCurrency);
+
+        // whatever was not filled stays as an open order
+        totalSupply = safeAdd(
+            safeTotalSub(totalSupply, epochSupplyOrderCurrency),
+            rmul(epochSupplyOrderCurrency, safeSub(ONE, epochs[epochID].supplyFulfillment.value))
+        );
+        totalRedeem = safeAdd(
+            safeTotalSub(totalRedeem, redeemInToken),
+            rmul(redeemInToken, safeSub(ONE, epochs[epochID].redeemFulfillment.value))
+        );
+
+        emit EpochUpdate(epochID, supplyFulfillment_, redeemFulfillment_, tokenPrice_);
+    }
+
+    /// @dev Nets the minting of the epoch against its burning and moves only the
+    /// difference. Minting the full supply and burning the full redemption separately
+    /// would end in the same place, cost more gas, and show a misleading total supply
+    /// to anyone reading it during the transaction.
+    function adjustTokenBalance(uint256 epochID, uint256 epochSupplyToken, uint256 epochRedeemToken) internal {
+        uint256 mintAmount = 0;
+        if (epochs[epochID].tokenPrice.value > 0) {
+            mintAmount = rmul(epochSupplyToken, epochs[epochID].supplyFulfillment.value);
+        }
+        uint256 burnAmount = rmul(epochRedeemToken, epochs[epochID].redeemFulfillment.value);
+
+        if (burnAmount > mintAmount) {
+            safeBurn(safeSub(burnAmount, mintAmount));
+            return;
+        }
+        uint256 diff = safeSub(mintAmount, burnAmount);
+        if (diff > 0) {
+            token.mint(self, diff);
+        }
+    }
+
+    /// @dev The same netting for currency, settled against the reserve rather than
+    /// the token.
+    function adjustCurrencyBalance(uint256 epochID, uint256 epochSupply, uint256 epochRedeem) internal {
+        uint256 currencySupplied = rmul(epochSupply, epochs[epochID].supplyFulfillment.value);
+        uint256 currencyRequired = rmul(epochRedeem, epochs[epochID].redeemFulfillment.value);
+
+        if (currencySupplied > currencyRequired) {
+            uint256 surplus = safeSub(currencySupplied, currencyRequired);
+            currency.approve(address(reserve), surplus);
+            reserve.deposit(surplus);
+            return;
+        }
+        uint256 shortfall = safeSub(currencyRequired, currencySupplied);
+        if (shortfall > 0) {
+            safePayout(shortfall);
+        }
+    }
+
+    // step 4, release. Each user pulls their own share. Allocating value to tranches
+    // happens in the coordinator, between the escrow step and this one.
+
+    /// @notice What a user is owed across every epoch executed since they ordered.
+    /// @param usr Address to calculate for.
+    /// @param endEpoch Last epoch to include.
+    /// @return payoutCurrencyAmount Currency owed.
+    /// @return payoutTokenAmount Tranche tokens owed.
+    /// @return remainingSupplyCurrency Supply order still open.
+    /// @return remainingRedeemToken Redeem order still open.
+    /// @dev A read only version of the same walk that deservedRelease performs, so a
+    /// caller can preview a settlement before paying gas for it.
+    function calculateDeservedRelease(address usr, uint256 endEpoch)
         public
         view
         returns (
-            uint256 payouCurrencyAmount,
-            uint256 payouTokenAmount,
+            uint256 payoutCurrencyAmount,
+            uint256 payoutTokenAmount,
             uint256 remainingSupplyCurrency,
             uint256 remainingRedeemToken
         )
     {
-        uint256 epochId = users[user].orderedInEpoch;
-        uint256 lastEpochExecuted = epochPlacement.lastEpochExecuted();
-        uint256 remainingSupplyCurrency = users[user].supplyCurrencyAmount;
-        uint256 remainingRedeemToken = users[user].redeemTokenAmount;
+        uint256 epochId = users[usr].orderedInEpoch;
+        uint256 lastEpochExecuted_ = epochPlacement.lastEpochExecuted();
+        remainingSupplyCurrency = users[usr].supplyCurrencyAmount;
+        remainingRedeemToken = users[usr].redeemTokenAmount;
         uint256 amount = 0;
 
-        if (endEpoch > lastEpochExecuted) {
-            endEpoch = lastEpochExecuted;
+        if (endEpoch > lastEpochExecuted_) {
+            endEpoch = lastEpochExecuted_;
         }
 
         while (epochId <= endEpoch && (remainingSupplyCurrency != 0 || remainingRedeemToken != 0)) {
             if (remainingSupplyCurrency != 0) {
-                //payout should be including remaining or unprocessed orders
-                amount = rmul(remainingSupplyCurrency, epochs[epochId].supplyFulfillment);
+                // the payout includes orders that are still open
+                amount = rmul(remainingSupplyCurrency, epochs[epochId].supplyFulfillment.value);
                 if (amount != 0) {
                     payoutTokenAmount =
-                        safeAdd(payoutTokenAmount, safeDiv(safeMul(amount, ONE), epochs[epochId].tokenPrice));
+                        safeAdd(payoutTokenAmount, safeDiv(safeMul(amount, ONE), epochs[epochId].tokenPrice.value));
                     remainingSupplyCurrency = safeSub(remainingSupplyCurrency, amount);
                 }
             }
             if (remainingRedeemToken != 0) {
-                amount = rmul(remainingRedeemToken, epochs[epochId].redeemFulfillment);
+                amount = rmul(remainingRedeemToken, epochs[epochId].redeemFulfillment.value);
                 if (amount != 0) {
-                    payoutCurrencyAmount = safeAdd(payoutCurrencyAmount, rmul(amount, epochs[epochId].tokenPrice));
+                    payoutCurrencyAmount = safeAdd(payoutCurrencyAmount, rmul(amount, epochs[epochId].tokenPrice.value));
                     remainingRedeemToken = safeSub(remainingRedeemToken, amount);
                 }
             }
@@ -182,7 +338,9 @@ contract Tranche is Math, Auth, FixedPoint {
         return (payoutCurrencyAmount, payoutTokenAmount, remainingSupplyCurrency, remainingRedeemToken);
     }
 
-    function deservedRelease()
+    /// @notice Settles everything a user is owed up to the last executed epoch.
+    /// @param usr Address to settle for.
+    function deservedRelease(address usr)
         public
         auth
         returns (
@@ -192,64 +350,77 @@ contract Tranche is Math, Auth, FixedPoint {
             uint256 remainingRedeemToken
         )
     {
-        (
-            payoutCurrencyAmount, payoutTokenAmount, remainingSupplyCurrency, remainingRedeemToken
-        ) = calculateDeservedRelease(user, endEpoch);
-        users[user].supplyCurrencyAmount = remainingSupplyCurrency;
-        users[user].redeemTokenAmount = remainingRedeemToken;
-        users[user].orderedInEpoch = safeAdd(endEpoch, 1);
+        return deservedRelease(usr, epochPlacement.lastEpochExecuted());
+    }
+
+    /// @notice Settles what a user is owed up to a given epoch.
+    /// @param usr Address to settle for.
+    /// @param endEpoch Last epoch to settle.
+    /// @dev Bounded, so a user whose order has sat through many epochs can settle in
+    /// several transactions rather than one that runs out of gas. The stored cursor
+    /// moves past the epoch just settled, so settling in parts can be continued and
+    /// never pays twice.
+    function deservedRelease(address usr, uint256 endEpoch)
+        public
+        auth
+        returns (
+            uint256 payoutCurrencyAmount,
+            uint256 payoutTokenAmount,
+            uint256 remainingSupplyCurrency,
+            uint256 remainingRedeemToken
+        )
+    {
+        uint256 lastEpochExecuted_ = epochPlacement.lastEpochExecuted();
+        if (endEpoch > lastEpochExecuted_) {
+            endEpoch = lastEpochExecuted_;
+        }
+
+        (payoutCurrencyAmount, payoutTokenAmount, remainingSupplyCurrency, remainingRedeemToken) =
+            calculateDeservedRelease(usr, endEpoch);
+
+        users[usr].supplyCurrencyAmount = remainingSupplyCurrency;
+        users[usr].redeemTokenAmount = remainingRedeemToken;
+        users[usr].orderedInEpoch = safeAdd(endEpoch, 1);
 
         if (payoutCurrencyAmount > 0) {
-            _safeTransfer(currency, user, payoutCurrencyAmount);
+            _safeTransfer(currency, usr, payoutCurrencyAmount);
         }
         if (payoutTokenAmount > 0) {
-            _safeTransfer(token, user, payoutTokenAmount);
+            _safeTransfer(token, usr, payoutTokenAmount);
         }
+
+        emit Release(usr, payoutCurrencyAmount, payoutTokenAmount);
         return (payoutCurrencyAmount, payoutTokenAmount, remainingSupplyCurrency, remainingRedeemToken);
     }
 
-    ////////////////////////////////////////////////////////////
-    /*this will be a core dependency for the tranche wise distribution by coordinator*/
-    ////////////////////////////////////////////////////////////
-    function epochUpdate(
-        uint256 epochID,
-        uint256 supplyFulfillment_,
-        uint256 redeemFulfillment_,
-        uint256 tokenPrice_,
-        uint256 epochSupplyOrderCurrency,
-        uint256 epochRedeemOrderCurrency
-    ) public auth {
-        require(waitingForUpdate == true);
-        waitingForUpdate = false;
+    // helpers
 
-        epochs[epochID].supplyFulfillment.value = supplyFulfillment_;
-        epochs[epochID].redeemFulfillment.value = redeemFulfillment_;
-        epochs[epochID].tokenPrice.value = tokenPrice_;
-
-        // currency needs to be converted to tokenAmount with current token price
-        uint256 redeemInToken = 0;
-        uint256 supplyInToken = 0;
-        if (tokenPrice_ > 0) {
-            supplyInToken = rdiv(epochSupplyOrderCurrency, tokenPrice_);
-            redeemInToken = safeDiv(safeMul(epochRedeemOrderCurrency, ONE), tokenPrice_);
+    /// @dev The three safe helpers below clamp to what is available rather than
+    /// reverting, and that behaviour is confined to this contract. Epoch arithmetic
+    /// gathers rounding dust across the fulfilment shares, and reverting on a shortfall
+    /// of one wei would block the pool for every user at once. The reserve does not
+    /// clamp, so a real shortfall still shows up and only dust is absorbed here.
+    function _safeTransfer(ERC20Like erc20, address usr, uint256 amount) internal {
+        uint256 max = erc20.balanceOf(self);
+        if (amount > max) {
+            amount = max;
         }
-
-        // calculates the delta between supply and redeem for tokens and burn or mint them
-        adjustTokenBalance(epochID, supplyInToken, redeemInToken);
-        // calculates the delta between supply and redeem for currency and deposit or get them from the reserve
-        adjustCurrencyBalance(epochID, epochSupplyOrderCurrency, epochRedeemOrderCurrency);
-
-        // the unfulfilled orders (1-fulfillment) is automatically ordered
-        totalSupply = safeAdd(
-            safeTotalSub(totalSupply, epochSupplyOrderCurrency),
-            rmul(epochSupplyOrderCurrency, safeSub(ONE, epochs[epochID].supplyFulfillment.value))
-        );
-        totalRedeem = safeAdd(
-            safeTotalSub(totalRedeem, redeemInToken),
-            rmul(redeemInToken, safeSub(ONE, epochs[epochID].redeemFulfillment.value))
-        );
+        if (!erc20.transfer(usr, amount)) revert TransferFailed();
     }
 
-    //=========helpers=========
-    function _safeTransfer(ERC20Like token, address user, uint256) internal {}
+    function safeBurn(uint256 tokenAmount) internal {
+        uint256 max = token.balanceOf(self);
+        if (tokenAmount > max) {
+            tokenAmount = max;
+        }
+        token.burn(self, tokenAmount);
+    }
+
+    function safePayout(uint256 currencyAmount) internal {
+        uint256 max = reserve.totalBalance();
+        if (currencyAmount > max) {
+            currencyAmount = max;
+        }
+        reserve.payout(currencyAmount);
+    }
 }
