@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @title  Auth — minimal ward-based access control.
-/// @notice MakerDAO "dss" style, as used across Centrifuge. Each inheriting
-///         contract carries its own authorization set: an address with
-///         `wards[addr] == 1` may call `auth`-gated functions. The deployer is
-///         relied on construction; it can then `rely` the intended controllers
-///         and (typically) `deny` itself once wiring is complete.
+/// @title Auth
+/// @notice Minimal ward based access control, in the style used across MakerDAO and
+/// Centrifuge. Each inheriting contract keeps its own set of authorised addresses. An
+/// address with wards set to 1 may call any function marked auth. The deployer is
+/// authorised on construction, so it can authorise the intended controllers and then
+/// usually remove itself once wiring is done.
+/// @dev Not audited. Provided for study alongside the rest of this codebase.
 abstract contract Auth {
-    /// @notice 1 if `usr` is authorized, else 0.
+    /// @notice 1 if the address is authorised, otherwise 0.
     mapping(address => uint256) public wards;
 
     event Rely(address indexed usr);
@@ -16,7 +17,7 @@ abstract contract Auth {
 
     error NotAuthorized();
 
-    /// @notice Restrict a function to authorized wards.
+    /// @notice Restricts a function to authorised addresses.
     modifier auth() {
         if (wards[msg.sender] != 1) revert NotAuthorized();
         _;
@@ -27,13 +28,15 @@ abstract contract Auth {
         emit Rely(msg.sender);
     }
 
-    /// @notice Grant authorization to `usr`.
+    /// @notice Grants authorisation to an address.
+    /// @param usr Address to authorise.
     function rely(address usr) external auth {
         wards[usr] = 1;
         emit Rely(usr);
     }
 
-    /// @notice Revoke authorization from `usr`.
+    /// @notice Removes authorisation from an address.
+    /// @param usr Address to remove.
     function deny(address usr) external auth {
         wards[usr] = 0;
         emit Deny(usr);

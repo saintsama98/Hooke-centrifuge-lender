@@ -4,11 +4,5 @@
   },
   "lib/openzeppelin-contracts": {
     "rev": "5fd1781b1454fd1ef8e722282f86f9293cacf256"
-  },
-  "lib/tinlake": {
-    "tag": {
-      "name": "v0.3.0",
-      "rev": "fc1f8e275a9d05d877e64f46810c107cde0808ce"
-    }
   }
 }
